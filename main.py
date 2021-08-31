@@ -20,8 +20,8 @@ class Preprocess:
 
     def pre_process(self, frame, dim=(84,84)):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        #frame = cv2.resize(frame, dim, interpolation = cv2.INTER_AREA)
-        #frame = frame / 255
+        frame = cv2.resize(frame, dim, interpolation = cv2.INTER_AREA)
+        frame = frame / 255
         return frame
 
 
