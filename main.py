@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from random import sample
 from collections import deque
 import ipdb
 import keyboard as k
@@ -51,6 +52,19 @@ class Preprocess:
         frame = frame[np.newaxis, :, :]
         return frame
 
+class BufferReplay:
+    def __init__(self, capacity=100000):
+        self.capacity = capacity
+        self.buffer = deque(maxlen=capacity)
+
+    def add(self, exp):
+        self.buffer.append(exp)
+
+    def sample(self, size):
+        size = min(size, len(self.buffer))
+        return sample(self.buffer, size)
+
+
 
 def main():
     env = gym.make('Breakout-v0')
@@ -70,9 +84,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
-    #env = gym.make('Breakout-v0')
-    #obs = env.reset()
+    #main()
+    env = gym.make('Breakout-v0')
     #pp = Preprocess()
     #obs = pp.pre_process(obs)
     #ipdb.set_trace()
