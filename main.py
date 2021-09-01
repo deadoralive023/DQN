@@ -64,7 +64,15 @@ class BufferReplay:
         size = min(size, len(self.buffer))
         return sample(self.buffer, size)
 
-
+    def discretized_sample(self, size):
+        size = min(size, len(self.buffer))
+        indexes = sample(range(0, len(self.buffer)), size)
+        states = torch.tensor([self.buffer[i][0] for i in indexes])
+        actions = torch.tensor([self.buffer[i][1] for i in indexes])
+        rewards = torch.tensor([self.buffer[i][2] for i in indexes])
+        next_states = torch.tensor([self.buffer[i][3] for i in indexes])
+        terminals = torch.tensor([self.buffer[i][4] for i in indexes])
+        return [states, actions, rewards, next_states, terminals]
 
 def main():
     env = gym.make('Breakout-v0')
@@ -85,7 +93,7 @@ def main():
 
 if __name__ == '__main__':
     #main()
-    env = gym.make('Breakout-v0')
+    #env = gym.make('Breakout-v0')
     #pp = Preprocess()
     #obs = pp.pre_process(obs)
     #ipdb.set_trace()
