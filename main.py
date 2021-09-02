@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
-from random import sample
+from random import sample, random
 from collections import deque
 import ipdb
 import keyboard as k
@@ -75,22 +75,40 @@ class BufferReplay:
         terminals = torch.tensor([self.buffer[i][4] for i in indexes])
         return [states, actions, rewards, next_states, terminals]
 
+class ExplorationStrategy:
+    def __init__(self, eps=1.0, eps_end=0.1, eps_decay=0.999999):
+        self.eps = eps
+        self.eps_end = eps_end
+        self.eps_decay = eps_decay
+
+    def epslion_greedy(self, step):
+        self.eps = self.eps_decay ** step
+        return self.eps
+        
+
 class Agent:
     def __init__(self, env, gamma=0.99, batch_size=2500, buffer_replay_capacity=100000):
         self.env = env
         self.pp = PreProcess()
         self.br = BufferReplay(buffer_replay_capacity)
+        self.es = ExplorationStrategy()
         self.value_net = Net(env.action_space.n)
         self.target_net = Net(env.action_space.n)
         self.copy_weights(self.target_net, self.value_net)
         self.target_net.eval()
         self.prev_obs = self.env.reset()
         self.prev_obs = self.pp.pre_process(self.prev_obs)
-        self.prev_obs = self.pp.stack_frames(self.prev_obs)
+        self.prev_obs = torch.Tensor(self.pp.stack_frames(self.prev_obs))
         self.gamma = gamma
         self.batch_size = batch_size
 
-    def step(self, action):
+    def step(self, step):
+        if random() < es.epsilon_greedy(step):
+            action = env.action_space.sample()
+        else:
+            with torch.no_grad():
+                input = torch.unsqueeze(self.prev_obs, 0)
+                action =  torch.argmax(self.value_net(input)).detach().item()
         obs, reward, done, _ = self.env.step(action)
         obs = self.pp.pre_process(obs)
         obs = self.pp.stack_frames(obs)
@@ -135,8 +153,7 @@ def main(render=False):
 
     global_step = 0
     while True:
-        action = env.action_space.sample()
-        obs, reward, done = agent.step(action)
+        obs, reward, done = agent.step(global_step)
         #sample = agent.br.discretized_sample(10)
         #output = agent.value_net(sample[0])
 
