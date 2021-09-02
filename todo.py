@@ -4,3 +4,4 @@
         [X] - Create Buffer Replay
         [X] - Create Exploration Strategy
         [X] - Create Agent
+        [X] - Setup wandb

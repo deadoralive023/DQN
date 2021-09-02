@@ -9,8 +9,7 @@ import numpy as np
 from random import sample, random
 from collections import deque
 import ipdb
-import keyboard as k
-
+import wandb
 
 class Net(nn.Module):
     def __init__(self, num_actions, lr=0.00025):
@@ -81,7 +80,7 @@ class ExplorationStrategy:
         self.eps_end = eps_end
         self.eps_decay = eps_decay
 
-    def epslion_greedy(self, step):
+    def epsilon_greedy(self, step):
         self.eps = self.eps_decay ** step
         return self.eps
         
@@ -94,7 +93,7 @@ class Agent:
         self.es = ExplorationStrategy()
         self.value_net = Net(env.action_space.n)
         self.target_net = Net(env.action_space.n)
-        self.copy_weights(self.target_net, self.value_net)
+        self.update_target_net()
         self.target_net.eval()
         self.prev_obs = self.env.reset()
         self.prev_obs = self.pp.pre_process(self.prev_obs)
@@ -103,8 +102,8 @@ class Agent:
         self.batch_size = batch_size
 
     def step(self, step):
-        if random() < es.epsilon_greedy(step):
-            action = env.action_space.sample()
+        if random() < self.es.epsilon_greedy(step):
+            action = self.env.action_space.sample()
         else:
             with torch.no_grad():
                 input = torch.unsqueeze(self.prev_obs, 0)
@@ -114,16 +113,16 @@ class Agent:
         obs = self.pp.stack_frames(obs)
         self.br.add([self.prev_obs, action, reward, obs, int(done)])
         self.prev_obs = obs
-        if done:
-            self.prev_obs = self.env.reset()
-            self.prev_obs = self.pp.pre_process(self.prev_obs)
-            self.prev_obs = self.pp.stack_frames(self.prev_obs)
         return obs, reward, done
 
 
-    def copy_weights(self, net1, net2):
-        net1.load_state_dict(net2.state_dict())
+    def update_target_net(self):
+        self.target_net.load_state_dict(self.value_net.state_dict())
 
+    def env_reset(self):
+        self.prev_obs = self.env.reset()
+        self.prev_obs = self.pp.pre_process(self.prev_obs)
+        self.prev_obs = self.pp.stack_frames(self.prev_obs)
 
     def learn(self):
         sample = self.br.discretized_sample(self.batch_size)
@@ -146,29 +145,35 @@ class Agent:
 def main(render=False):
     BATCH_SIZE = 1500
     BUFF_REPLAY_CAP = 150000
-    TRAIN_FREQ = 10
-    TAG_NET_UPDATE_FRQ = 1000
+    TRAIN_FRQ = 10
+    TARG_NET_UPDATE_FRQ = 1000
     env = gym.make('Breakout-v0')
     agent = Agent(env, batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP)
 
+
+    episodes_reward = deque(maxlen=100)
+    rolling_reward = 0
     global_step = 0
+    wandb.init()
     while True:
         obs, reward, done = agent.step(global_step)
-        #sample = agent.br.discretized_sample(10)
-        #output = agent.value_net(sample[0])
+        rolling_reward += reward
+        if done:
+            agent.env_reset()
+            episodes_reward.appen(rolling_reward)
+            rolling_reward = 0
 
         global_step += 1
-        if global_step % TRAIN_FREQ == 0:
+        if global_step % TRAIN_FRQ == 0:
             loss = agent.learn()
-            print(loss)
+            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps}, step=global_step)
+        if global_step  % TARG_NET_UPDATE_FRQ == 0:
+            agent.update_target_net()
 
         if render:
             env.render()
             time.sleep(0.005)
-
-        #if k.is_pressed('q'):
-        #    break
-
+        
 
 
 if __name__ == '__main__':
