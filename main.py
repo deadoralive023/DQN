@@ -13,17 +13,17 @@ import keyboard as k
 
 
 class Net(nn.Module):
-    def __init__(self, num_actions, lr=0.0001):
+    def __init__(self, num_actions, lr=0.00025):
         super().__init__()
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(4, 16, kernel_size=4, stride=2, padding=0),
+            nn.Conv2d(4, 16, kernel_size=8, stride=2, padding=0),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=4, stride=4, padding=0),
             nn.ReLU(),
              # nn.Linear(256, num_of_actions)
         )
         self.linear_layers = nn.Sequential(
-            nn.Linear(32*10*10, 256),
+            nn.Linear(32*9*9, 256),
             nn.ReLU(),
             nn.Linear(256, num_actions)
         )
@@ -31,7 +31,7 @@ class Net(nn.Module):
 
     def forward(self, input):
         output = self.conv_layers(input)
-        output = output.view(-1, 32*10*10)
+        output = output.view(-1, 32*9*9)
         output = self.linear_layers(output)
         return output
 
@@ -76,10 +76,10 @@ class BufferReplay:
         return [states, actions, rewards, next_states, terminals]
 
 class Agent:
-    def __init__(self, env, gamma=1, batch_size=3):
+    def __init__(self, env, gamma=0.99, batch_size=2500, buffer_replay_capacity=100000):
         self.env = env
         self.pp = PreProcess()
-        self.br = BufferReplay()
+        self.br = BufferReplay(buffer_replay_capacity)
         self.value_net = Net(env.action_space.n)
         self.target_net = Net(env.action_space.n)
         self.copy_weights(self.target_net, self.value_net)
@@ -98,7 +98,7 @@ class Agent:
         self.prev_obs = obs
         if done:
             self.prev_obs = self.env.reset()
-            self.prev_obs = self.pp.preprocess(self.prev_obs)
+            self.prev_obs = self.pp.pre_process(self.prev_obs)
             self.prev_obs = self.pp.stack_frames(self.prev_obs)
         return obs, reward, done
 
@@ -116,9 +116,9 @@ class Agent:
         q_sa = torch.squeeze(q_sa)
         with torch.no_grad():
             max_q = self.target_net(sample[3])
-        ipdb.set_trace()
         max_q, _ = torch.max(max_q, dim=1)
-        loss = (((sample[2] + (1 - sample[4]) * self.gamma * max_q) - q_sa)**2).mean()
+        loss = torch.mean(((sample[2] + (1 - sample[4]) * self.gamma * max_q) -  q_sa)**2)
+        loss = ((- q_sa)**2).mean()
 
         self.value_net.optim.zero_grad()
         loss.backward()
@@ -126,19 +126,25 @@ class Agent:
         return loss.detach().item()
 
 def main(render=False):
+    BATCH_SIZE = 1500
+    BUFF_REPLAY_CAP = 150000
+    TRAIN_FREQ = 10
+    TAG_NET_UPDATE_FRQ = 1000
     env = gym.make('Breakout-v0')
-    agent = Agent(env)
-    index = 0
+    agent = Agent(env, batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP)
+
+    global_step = 0
     while True:
         action = env.action_space.sample()
         obs, reward, done = agent.step(action)
-        #ipdb.set_trace()
+        #sample = agent.br.discretized_sample(10)
+        #output = agent.value_net(sample[0])
 
-        sample = agent.br.discretized_sample(10)
-        output = agent.value_net(sample[0])
-        index += 1
-        if index == 10:
-            agent.learn()
+        global_step += 1
+        if global_step % TRAIN_FREQ == 0:
+            loss = agent.learn()
+            print(loss)
+
         if render:
             env.render()
             time.sleep(0.005)
