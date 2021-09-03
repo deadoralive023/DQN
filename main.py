@@ -8,11 +8,12 @@ import torch.optim as optim
 import numpy as np
 from random import sample, random
 from collections import deque
+import os
 import ipdb
 import wandb
 
 class Net(nn.Module):
-    def __init__(self, num_actions, lr=0.00025):
+    def __init__(self, num_actions, lr=0.00001):
         super().__init__()
         self.conv_layers = nn.Sequential(
             nn.Conv2d(4, 16, kernel_size=8, stride=2, padding=0),
@@ -39,7 +40,7 @@ class PreProcess:
     def __init__(self, stack_size=4):
         self.stack_size = stack_size
         self.prev_frames = deque(maxlen=stack_size)
-    
+
     def stack_frames(self, frame):
         if len(self.prev_frames) == 0:
             self.prev_frames.extend([frame] * (self.stack_size - 1))
@@ -55,23 +56,27 @@ class PreProcess:
 class BufferReplay:
     def __init__(self, capacity=100000):
         self.capacity = capacity
-        self.buffer = deque(maxlen=capacity)
+        self.buffer = [None] * capacity
+        self.index = 0
 
     def add(self, exp):
-        self.buffer.append(exp)
+        if self.index >= self.capacity:
+            self.index = 0
+        self.buffer[self.index] = exp
+        self.index += 1
 
     def sample(self, size):
-        size = min(size, len(self.buffer))
-        return sample(self.buffer, size)
+        size = min(size, self.index if self.buffer[-1] == None else self.capacity)
+        return sample(self.buffer[:size], size)
 
     def discretized_sample(self, size):
-        size = min(size, len(self.buffer))
-        indexes = sample(range(0, len(self.buffer)), size)
-        states = torch.Tensor([self.buffer[i][0] for i in indexes])
-        actions = torch.tensor([self.buffer[i][1] for i in indexes])
-        rewards = torch.Tensor([self.buffer[i][2] for i in indexes])
-        next_states = torch.Tensor([self.buffer[i][3] for i in indexes])
-        terminals = torch.tensor([self.buffer[i][4] for i in indexes])
+        size = min(size, self.index if self.buffer[-1] == None else self.capacity)
+        _sample = sample(self.buffer[:(self.index if self.buffer[-1] == None else self.capacity)], size)
+        states = torch.Tensor([s[0] for s in _sample]).to('cuda:0')
+        actions = torch.tensor([s[1] for s in _sample]).to('cuda:0')
+        rewards = torch.Tensor([s[2] for s in _sample]).to('cuda:0')
+        next_states = torch.Tensor([s[3] for s in _sample]).to('cuda:0')
+        terminals = torch.Tensor([s[4] for s in _sample]).to('cuda:0')
         return [states, actions, rewards, next_states, terminals]
 
 class ExplorationStrategy:
@@ -83,7 +88,7 @@ class ExplorationStrategy:
     def epsilon_greedy(self, step):
         self.eps = self.eps_decay ** step
         return self.eps
-        
+
 
 class Agent:
     def __init__(self, env, gamma=0.99, batch_size=2500, buffer_replay_capacity=100000):
@@ -91,13 +96,13 @@ class Agent:
         self.pp = PreProcess()
         self.br = BufferReplay(buffer_replay_capacity)
         self.es = ExplorationStrategy()
-        self.value_net = Net(env.action_space.n)
-        self.target_net = Net(env.action_space.n)
+        self.value_net = Net(env.action_space.n).to('cuda:0')
+        self.target_net = Net(env.action_space.n).to('cuda:0')
         self.update_target_net()
         self.target_net.eval()
         self.prev_obs = self.env.reset()
         self.prev_obs = self.pp.pre_process(self.prev_obs)
-        self.prev_obs = torch.Tensor(self.pp.stack_frames(self.prev_obs))
+        self.prev_obs = self.pp.stack_frames(self.prev_obs)
         self.gamma = gamma
         self.batch_size = batch_size
 
@@ -106,7 +111,8 @@ class Agent:
             action = self.env.action_space.sample()
         else:
             with torch.no_grad():
-                input = torch.unsqueeze(self.prev_obs, 0)
+                input = torch.Tensor(self.prev_obs).to('cuda:0')
+                input = torch.unsqueeze(input, 0)
                 action =  torch.argmax(self.value_net(input)).detach().item()
         obs, reward, done, _ = self.env.step(action)
         obs = self.pp.pre_process(obs)
@@ -127,15 +133,14 @@ class Agent:
     def learn(self):
         sample = self.br.discretized_sample(self.batch_size)
         # loss => R(s, a) + gamma * maxQ(s`, a*) - Q(s, a)
-        q_sa = self.value_net(sample[0])
+        q_sa = self.value_net(sample[0]).to('cuda:0')
         acts = sample[1].view(-1, 1)
         q_sa = q_sa.gather(1, acts)
         q_sa = torch.squeeze(q_sa)
         with torch.no_grad():
-            max_q = self.target_net(sample[3])
+            max_q = self.target_net(sample[3]).to('cuda:0')
         max_q, _ = torch.max(max_q, dim=1)
         loss = torch.mean(((sample[2] + (1 - sample[4]) * self.gamma * max_q) -  q_sa)**2)
-        loss = ((- q_sa)**2).mean()
 
         self.value_net.optim.zero_grad()
         loss.backward()
@@ -143,15 +148,14 @@ class Agent:
         return loss.detach().item()
 
 def main(render=False):
-    BATCH_SIZE = 1500
+    BATCH_SIZE = 1000
     BUFF_REPLAY_CAP = 150000
-    TRAIN_FRQ = 10
-    TARG_NET_UPDATE_FRQ = 1000
-    env = gym.make('Breakout-v0')
-    agent = Agent(env, batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP)
+    TRAIN_FRQ = 100
+    TARG_NET_UPDATE_FRQ = 10000
+    agent = Agent(gym.make('Breakout-v0'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP)
 
 
-    episodes_reward = deque(maxlen=100)
+    episodes_reward = deque([0.0], maxlen=100)
     rolling_reward = 0
     global_step = 0
     wandb.init()
@@ -160,32 +164,21 @@ def main(render=False):
         rolling_reward += reward
         if done:
             agent.env_reset()
-            episodes_reward.appen(rolling_reward)
+            episodes_reward.append(rolling_reward)
             rolling_reward = 0
 
         global_step += 1
+        #if global_step > BUFF_REPLAY_CAP:
         if global_step % TRAIN_FRQ == 0:
             loss = agent.learn()
-            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps}, step=global_step)
+            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps})
         if global_step  % TARG_NET_UPDATE_FRQ == 0:
             agent.update_target_net()
-
         if render:
-            env.render()
+            agent.env.render()
             time.sleep(0.005)
-        
+
 
 
 if __name__ == '__main__':
     main()
-    #env = gym.make('Breakout-v0')
-    #pp = Preprocess()
-    #obs = pp.pre_process(env.reset())
-    #ipdb.set_trace()
-
-    stacks = pp.stack_frames(obs)
-
-    #obs_t = torch.Tensor(obs)
-    #obs_t = torch.cat([obs_t, obs_t]).unsqueeze(1)
-    #net = Net(4)
-    #output = net(obs_t)
