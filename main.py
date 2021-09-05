@@ -175,7 +175,6 @@ def main(render=False):
         #if global_step > BUFF_REPLAY_CAP:
         if global_step % TRAIN_FRQ == 0:
             loss = agent.learn()
-            print(len(episodes_reward), len(agent.br.buffer), process.memory_info().rss)
             wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps}, step=global_step)
         if global_step  % TARG_NET_UPDATE_FRQ == 0:
             agent.update_target_net()
