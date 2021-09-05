@@ -50,6 +50,7 @@ class PreProcess:
     def pre_process(self, frame, dim=(84,84)):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = cv2.resize(frame, dim, interpolation = cv2.INTER_AREA)
+        frame = frame[10:frame.shape[0], 0:frame.shape[1]]
         frame = frame / 255
         return frame
 
@@ -152,13 +153,12 @@ class Agent:
         return loss.detach().item()
 
 def main(render=False):
-    process = psutil.Process(os.getpid())
     BATCH_SIZE = 32
     BUFF_REPLAY_CAP = 150000
     TRAIN_FRQ = 4
-    TARG_NET_UPDATE_FRQ = 1000
+    TARG_NET_UPDATE_FRQ = 10000
     FRAME_SKIP = 3
-    agent = Agent(gym.make('BreakoutDeterministic-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, device='cuda:0')
+    agent = Agent(gym.make('Pong-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, device='cuda:0')
     episodes_reward = deque([0.0], maxlen=100)
     rolling_reward = 0
     global_step = 0
