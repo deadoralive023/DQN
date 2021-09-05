@@ -13,7 +13,7 @@ import ipdb
 import wandb
 
 class Net(nn.Module):
-    def __init__(self, num_actions, lr=0.00001):
+    def __init__(self, num_actions, lr=2.5e-4):
         super().__init__()
         self.conv_layers = nn.Sequential(
             nn.Conv2d(4, 16, kernel_size=8, stride=2, padding=0),
@@ -54,10 +54,11 @@ class PreProcess:
         return frame
 
 class BufferReplay:
-    def __init__(self, capacity=100000):
+    def __init__(self, capacity=100000, device='cuda:0'):
         self.capacity = capacity
         self.buffer = [None] * capacity
         self.index = 0
+        self.device = device
 
     def add(self, exp):
         if self.index >= self.capacity:
@@ -72,15 +73,15 @@ class BufferReplay:
     def discretized_sample(self, size):
         size = min(size, self.index if self.buffer[-1] == None else self.capacity)
         _sample = sample(self.buffer[:(self.index if self.buffer[-1] == None else self.capacity)], size)
-        states = torch.Tensor([s[0] for s in _sample]).to('cuda:0')
-        actions = torch.tensor([s[1] for s in _sample]).to('cuda:0')
-        rewards = torch.Tensor([s[2] for s in _sample]).to('cuda:0')
-        next_states = torch.Tensor([s[3] for s in _sample]).to('cuda:0')
-        terminals = torch.Tensor([s[4] for s in _sample]).to('cuda:0')
+        states = torch.Tensor([s[0] for s in _sample]).to(self.device)
+        actions = torch.tensor([s[1] for s in _sample]).to(self.device)
+        rewards = torch.Tensor([s[2] for s in _sample]).to(self.device)
+        next_states = torch.Tensor([s[3] for s in _sample]).to(self.device)
+        terminals = torch.Tensor([s[4] for s in _sample]).to(self.device)
         return [states, actions, rewards, next_states, terminals]
 
 class ExplorationStrategy:
-    def __init__(self, eps=1.0, eps_end=0.1, eps_decay=0.999999):
+    def __init__(self, eps=1.0, eps_end=0.1, eps_decay=0.999997):
         self.eps = eps
         self.eps_end = eps_end
         self.eps_decay = eps_decay
@@ -91,13 +92,13 @@ class ExplorationStrategy:
 
 
 class Agent:
-    def __init__(self, env, gamma=0.99, batch_size=2500, buffer_replay_capacity=100000):
+    def __init__(self, env, gamma=0.99, batch_size=2500, buffer_replay_capacity=100000, frame_skip=4, device='cuda:0'):
         self.env = env
         self.pp = PreProcess()
-        self.br = BufferReplay(buffer_replay_capacity)
+        self.br = BufferReplay(buffer_replay_capacity, device)
         self.es = ExplorationStrategy()
-        self.value_net = Net(env.action_space.n).to('cuda:0')
-        self.target_net = Net(env.action_space.n).to('cuda:0')
+        self.value_net = Net(env.action_space.n).to(device)
+        self.target_net = Net(env.action_space.n).to(device)
         self.update_target_net()
         self.target_net.eval()
         self.prev_obs = self.env.reset()
@@ -105,16 +106,19 @@ class Agent:
         self.prev_obs = self.pp.stack_frames(self.prev_obs)
         self.gamma = gamma
         self.batch_size = batch_size
+        self.frame_skip = frame_skip
+        self.device = device
 
     def step(self, step):
         if random() < self.es.epsilon_greedy(step):
             action = self.env.action_space.sample()
         else:
             with torch.no_grad():
-                input = torch.Tensor(self.prev_obs).to('cuda:0')
+                input = torch.Tensor(self.prev_obs).to(self.device)
                 input = torch.unsqueeze(input, 0)
                 action =  torch.argmax(self.value_net(input)).detach().item()
-        obs, reward, done, _ = self.env.step(action)
+        for i in range(self.frame_skip + 1):
+          obs, reward, done, _ = self.env.step(action)
         obs = self.pp.pre_process(obs)
         obs = self.pp.stack_frames(obs)
         self.br.add([self.prev_obs, action, reward, obs, int(done)])
@@ -133,12 +137,12 @@ class Agent:
     def learn(self):
         sample = self.br.discretized_sample(self.batch_size)
         # loss => R(s, a) + gamma * maxQ(s`, a*) - Q(s, a)
-        q_sa = self.value_net(sample[0]).to('cuda:0')
+        q_sa = self.value_net(sample[0]).to(self.device)
         acts = sample[1].view(-1, 1)
         q_sa = q_sa.gather(1, acts)
         q_sa = torch.squeeze(q_sa)
         with torch.no_grad():
-            max_q = self.target_net(sample[3]).to('cuda:0')
+            max_q = self.target_net(sample[3]).to(self.device)
         max_q, _ = torch.max(max_q, dim=1)
         loss = torch.mean(((sample[2] + (1 - sample[4]) * self.gamma * max_q) -  q_sa)**2)
 
@@ -148,13 +152,13 @@ class Agent:
         return loss.detach().item()
 
 def main(render=False):
-    BATCH_SIZE = 1000
+    process = psutil.Process(os.getpid())
+    BATCH_SIZE = 32
     BUFF_REPLAY_CAP = 150000
-    TRAIN_FRQ = 100
-    TARG_NET_UPDATE_FRQ = 10000
-    agent = Agent(gym.make('Breakout-v0'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP)
-
-
+    TRAIN_FRQ = 4
+    TARG_NET_UPDATE_FRQ = 1000
+    FRAME_SKIP = 3
+    agent = Agent(gym.make('BreakoutDeterministic-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, device='cuda:0')
     episodes_reward = deque([0.0], maxlen=100)
     rolling_reward = 0
     global_step = 0
@@ -171,7 +175,8 @@ def main(render=False):
         #if global_step > BUFF_REPLAY_CAP:
         if global_step % TRAIN_FRQ == 0:
             loss = agent.learn()
-            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps})
+            print(len(episodes_reward), len(agent.br.buffer), process.memory_info().rss)
+            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps}, step=global_step)
         if global_step  % TARG_NET_UPDATE_FRQ == 0:
             agent.update_target_net()
         if render:
