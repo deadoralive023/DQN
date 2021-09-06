@@ -30,6 +30,7 @@ class Net(nn.Module):
         self.optim = optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, input):
+        input = input / 255
         output = self.conv_layers(input)
         output = output.view(-1, 32*9*9)
         output = self.linear_layers(output)
@@ -50,8 +51,8 @@ class PreProcess:
     def pre_process(self, frame, dim=(84,84)):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = cv2.resize(frame, dim, interpolation = cv2.INTER_AREA)
-        frame = frame[10:frame.shape[0], 0:frame.shape[1]]
-        frame = frame / 255
+        #frame = frame[10:frame.shape[0], 0:frame.shape[1]]
+        #frame = frame / 255
         return frame
 
 class BufferReplay:
@@ -88,7 +89,7 @@ class ExplorationStrategy:
         self.eps_decay = eps_decay
 
     def epsilon_greedy(self, step):
-        self.eps = self.eps_decay ** step
+        self.eps = max(self.eps_end, self.eps_decay ** step)
         return self.eps
 
 
@@ -135,6 +136,9 @@ class Agent:
         self.prev_obs = self.pp.pre_process(self.prev_obs)
         self.prev_obs = self.pp.stack_frames(self.prev_obs)
 
+    def save(self, name):
+        torch.save(self.value_net, 'models/' + str(name) + '.pt')
+
     def learn(self):
         sample = self.br.discretized_sample(self.batch_size)
         # loss => R(s, a) + gamma * maxQ(s`, a*) - Q(s, a)
@@ -158,15 +162,18 @@ def main(render=False):
     TRAIN_FRQ = 4
     TARG_NET_UPDATE_FRQ = 10000
     FRAME_SKIP = 3
-    agent = Agent(gym.make('Pong-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, device='cuda:0')
+    SAVE_MODEL_AFTER = 1000000
+    agent = Agent(gym.make('BreakoutDeterministic-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, device='cuda:0')
     episodes_reward = deque([0.0], maxlen=100)
     rolling_reward = 0
     global_step = 0
+    episode = 0
     wandb.init()
     while True:
         obs, reward, done = agent.step(global_step)
         rolling_reward += reward
         if done:
+            episode += 1
             agent.env_reset()
             episodes_reward.append(rolling_reward)
             rolling_reward = 0
@@ -175,14 +182,14 @@ def main(render=False):
         #if global_step > BUFF_REPLAY_CAP:
         if global_step % TRAIN_FRQ == 0:
             loss = agent.learn()
-            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps}, step=global_step)
+            wandb.log({'loss':loss, 'avg-reward': np.mean(episodes_reward), 'eps':agent.es.eps, 'episode':episode}, step=global_step)
         if global_step  % TARG_NET_UPDATE_FRQ == 0:
             agent.update_target_net()
+        if global_step % SAVE_MODEL_AFTER == 0:
+            agent.save(global_step)
         if render:
             agent.env.render()
             time.sleep(0.005)
-
-
 
 if __name__ == '__main__':
     main()
