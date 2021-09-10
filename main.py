@@ -15,7 +15,7 @@ import wandb
 from tqdm import tqdm
 
 class Net(nn.Module):
-    def __init__(self, num_actions, lr=0.00005):
+    def __init__(self, num_actions, lr=0.00025):
         super().__init__()
         self.conv_layers = nn.Sequential(
             nn.Conv2d(4, 32, kernel_size=8, stride=4, padding=0),
@@ -136,7 +136,7 @@ class Agent:
             obs, reward, done, _ = self.env.step(action)
             obs = self.pp.pre_process(obs)
             obs = self.pp.stack_frames(obs)
-            reward = self.clip_reward(reward)
+            #reward = self.clip_reward(reward)
             self.br.add([self.prev_obs, action, reward, obs, int(done)])
             self.prev_obs = obs
         return obs, reward, done
@@ -180,14 +180,14 @@ class Agent:
         return loss.detach().item()
 
 def main(render=False):
-    BATCH_SIZE = 32
-    BUFF_REPLAY_CAP = 100000
-    TRAIN_FRQ = 4
+    BATCH_SIZE = 256
+    BUFF_REPLAY_CAP = 150000
+    TRAIN_FRQ = 1
     TARG_NET_UPDATE_FRQ = 10000
     FRAME_SKIP = 3
-    NO_OP = 30
+    NO_OP = 70
     START_TRAIN_AFTER = 50000
-    SAVE_MODEL_AFTER = 1000000
+    SAVE_MODEL_AFTER = 500000
     agent = Agent(gym.make('PongNoFrameskip-v4'), batch_size=BATCH_SIZE, buffer_replay_capacity=BUFF_REPLAY_CAP, frame_skip=FRAME_SKIP, start_train_after=START_TRAIN_AFTER, no_op=NO_OP, device='cpu')
     episodes_reward = deque([0.0], maxlen=100)
     rolling_reward = 0
